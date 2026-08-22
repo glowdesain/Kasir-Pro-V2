@@ -27,80 +27,122 @@ class PrinterService {
   }
 
   /**
-   * Scan dan connect ke printer Bluetooth
+   * Scan dan connect ke printer Bluetooth (dengan timeout & better error handling)
    */
-  async connect() {
+  async connect(timeoutMs = 30000) {
     try {
       if (!navigator.bluetooth) {
-        throw new Error("Web Bluetooth API tidak tersedia di browser ini. Gunakan Chrome, Edge, atau Opera.");
+        throw new Error("Web Bluetooth API tidak tersedia. Gunakan Chrome, Edge, atau Opera (terbaru). iOS tidak support.");
       }
 
-      // Request device dengan filter untuk Epson printer
-      this.device = await navigator.bluetooth.requestDevice({
-        filters: [
-          { namePrefix: "RPPO2" },
-          { namePrefix: "TM-" },
-          { namePrefix: "FP-" },
-          { namePrefix: "T88" },
-          { namePrefix: "M30" },
-          { namePrefix: "M50" },
-          { namePrefix: "Printer" },
-          { namePrefix: "ESC" },
-        ],
-        optionalServices: this.PRINTER_SERVICES,
+      console.log("🔍 Memulai Bluetooth device scan...");
+
+      // Create timeout promise
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("SCAN_TIMEOUT")), timeoutMs);
       });
 
+      // Create scan promise
+      const scanPromise = (async () => {
+        this.device = await navigator.bluetooth.requestDevice({
+          filters: [
+            { namePrefix: "RPPO2" },
+            { namePrefix: "TM-" },
+            { namePrefix: "FP-" },
+            { namePrefix: "T88" },
+            { namePrefix: "M30" },
+            { namePrefix: "M50" },
+            { namePrefix: "Printer" },
+            { namePrefix: "ESC" },
+          ],
+          optionalServices: this.PRINTER_SERVICES,
+          timeout: timeoutMs,
+        });
+
+        return this.device;
+      })();
+
+      // Race between scan dan timeout
+      this.device = await Promise.race([scanPromise, timeoutPromise]);
+
+      console.log("✅ Device dipilih:", this.device.name);
       this.device.addEventListener("gattserverdisconnected", () => this.onDisconnected());
 
-      // Connect ke GATT server
-      const server = await this.device.gatt.connect();
-      console.log("✅ GATT server terhubung:", this.device.name);
+      // Connect ke GATT server dengan retry
+      let server = null;
+      let retries = 3;
+      
+      while (!server && retries > 0) {
+        try {
+          console.log("🔌 Connect ke GATT server... (retry", 4 - retries, "/3)");
+          server = await this.device.gatt.connect();
+          console.log("✅ GATT server connected");
+        } catch (error) {
+          retries--;
+          if (retries > 0) {
+            await new Promise(r => setTimeout(r, 1000));
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      if (!server) {
+        throw new Error("Tidak bisa connect ke GATT server setelah 3x retry");
+      }
 
       // Try find service dan characteristic
-      let service = null;
       let characteristic = null;
 
       for (const serviceUUID of this.PRINTER_SERVICES) {
         try {
-          service = await server.getPrimaryService(serviceUUID);
-          console.log("✅ Service ditemukan:", serviceUUID);
+          const service = await server.getPrimaryService(serviceUUID);
+          console.log("✅ Service found:", serviceUUID);
           
           for (const charUUID of this.PRINTER_CHARACTERISTICS) {
             try {
               characteristic = await service.getCharacteristic(charUUID);
-              console.log("✅ Characteristic ditemukan:", charUUID);
-              break;
+              console.log("✅ Characteristic found:", charUUID);
+              this.characteristic = characteristic;
+              this.isConnected = true;
+              
+              console.log("✅ Printer berhasil terhubung:", this.device.name);
+              return { success: true, device: this.device.name, status: "Terhubung" };
             } catch (e) {
-              // Characteristic tidak ditemukan, coba yang berikutnya
+              // Try next characteristic
             }
           }
-          
-          if (characteristic) break;
         } catch (e) {
-          // Service tidak ditemukan, coba yang berikutnya
+          // Try next service
         }
       }
 
-      if (!characteristic) {
-        throw new Error("Characteristic tidak ditemukan. Printer mungkin tidak kompatibel atau belum ter-pair dengan benar.");
-      }
-
-      this.characteristic = characteristic;
-      this.isConnected = true;
-      
-      console.log("✅ Printer berhasil terhubung:", this.device.name);
-      return { success: true, device: this.device.name, status: "Terhubung" };
+      throw new Error("Characteristic tidak ditemukan. Printer mungkin tidak kompatibel atau belum ter-pair dengan benar.");
     } catch (error) {
       this.isConnected = false;
-      console.error("❌ Error connect printer:", error);
+      console.error("❌ Connect error:", error);
       
-      if (error.name === "NotFoundError") {
-        return { success: false, error: "Printer tidak ditemukan. Pastikan sudah di-pair di Bluetooth settings dan masih dalam jangkauan." };
+      // Parse error
+      if (error.message === "SCAN_TIMEOUT") {
+        return { 
+          success: false, 
+          error: "Scanning timeout (30 detik). Printer tidak ditemukan. Coba: 1) Restart printer 2) Pastikan ter-pair di Bluetooth 3) Printer dalam jarak 10m" 
+        };
+      } else if (error.name === "NotFoundError") {
+        return { 
+          success: false, 
+          error: "Printer tidak ditemukan. Pastikan sudah di-pair di Bluetooth settings dan dalam jarak 10 meter." 
+        };
       } else if (error.message.includes("User cancelled")) {
         return { success: false, error: "Pembatalan pemilihan device." };
+      } else if (error.message.includes("Characteristic tidak ditemukan")) {
+        return { 
+          success: false, 
+          error: "Printer tidak compatible. Device ini bukan printer thermal. Coba printer lain." 
+        };
       }
       
-      return { success: false, error: error.message || "Koneksi printer gagal. Coba lagi." };
+      return { success: false, error: error.message || "Koneksi printer gagal." };
     }
   }
 

@@ -24,7 +24,8 @@ export function PrinterSettings({ onClose, settings, onSettingsChange, addToast 
   const handleConnect = async () => {
     setIsConnecting(true);
     try {
-      const result = await PrinterService.connect();
+      console.log("Starting printer connection...");
+      const result = await PrinterService.connect(30000); // 30 second timeout
 
       if (result.success) {
         setPrinterDevice({ name: result.device, connected: true });
@@ -34,9 +35,11 @@ export function PrinterSettings({ onClose, settings, onSettingsChange, addToast 
         });
         addToast(`✅ Printer terhubung: ${result.device}`, "success");
       } else {
+        console.error("Connection failed:", result.error);
         addToast(`❌ ${result.error}`, "error");
       }
     } catch (error) {
+      console.error("Unexpected error:", error);
       addToast(`❌ Error: ${error.message}`, "error");
     } finally {
       setIsConnecting(false);
