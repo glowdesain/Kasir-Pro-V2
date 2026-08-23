@@ -1,6 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import PrinterService from "./PrinterService";
-import { PrinterSettings } from "./PrinterSettings";
 
 // ── Data ────────────────────────────────────────────────────────────────────
 const CATEGORY_ICONS = { Makanan:"Makanan", Minuman:"Minuman", Snack:"Snack", Lainnya:"Lainnya", Semua:"Semua" };
@@ -823,6 +821,209 @@ function CategoryAvatar({ category, size=48 }) {
   );
 }
 
+// ── ESC/POS Bluetooth Printer (EPPOS RPP02) ─────────────────────────────────
+const ESC  = 0x1B;
+const GS   = 0x1D;
+
+function encodeText(text) {
+  return new TextEncoder().encode(text);
+}
+
+function buildReceipt(receipt, settings, formatRp, formatDate) {
+  const lines = [];
+
+  const center = (text, width=32) => {
+    const pad = Math.max(0, Math.floor((width - text.length) / 2));
+    return " ".repeat(pad) + text;
+  };
+  const leftRight = (left, right, width=32) => {
+    const space = Math.max(1, width - left.length - right.length);
+    return left + " ".repeat(space) + right;
+  };
+  const line = (char="-", width=32) => char.repeat(width);
+
+  // ESC/POS commands
+  const INIT        = [ESC, 0x40];                    // Initialize
+  const ALIGN_CTR   = [ESC, 0x61, 0x01];              // Center
+  const ALIGN_L     = [ESC, 0x61, 0x00];              // Left
+  const BOLD_ON     = [ESC, 0x45, 0x01];
+  const BOLD_OFF    = [ESC, 0x45, 0x00];
+  const FONT_LARGE  = [GS,  0x21, 0x11];              // Double size
+  const FONT_NORMAL = [GS,  0x21, 0x00];
+  const CUT         = [GS,  0x56, 0x41, 0x10];        // Partial cut
+  const FEED        = [ESC, 0x64, 0x04];              // Feed 4 lines
+
+  let bytes = [];
+  const add = (arr) => bytes.push(...arr);
+  const text = (str) => bytes.push(...encodeText(str));
+  const nl   = () => bytes.push(0x0A);
+
+  add(INIT);
+
+  // Header
+  add(ALIGN_CTR);
+  add(FONT_LARGE);
+  add(BOLD_ON);
+  text(settings.storeName); nl();
+  add(FONT_NORMAL);
+  add(BOLD_OFF);
+  text(settings.address); nl();
+  text("Tel: 021-12345678"); nl();
+  add(ALIGN_L);
+  text(line()); nl();
+
+  // Info transaksi
+  text("No  : " + receipt.id); nl();
+  text("Tgl : " + formatDate(receipt.date)); nl();
+  text("Kasir: " + (receipt.cashier || settings.cashier)); nl();
+  text(line()); nl();
+
+  // Items
+  receipt.items.forEach(item => {
+    const nama = item.name.length > 20 ? item.name.substring(0,20)+"." : item.name;
+    text(nama); nl();
+    const detail = `  ${item.qty} x ${formatRp(item.price)}`;
+    const subtotal = formatRp(item.qty * item.price);
+    text(leftRight(detail, subtotal)); nl();
+  });
+
+  text(line()); nl();
+
+  // Totals
+  text(leftRight("Subtotal", formatRp(receipt.subtotal))); nl();
+  if (receipt.discount > 0) {
+    text(leftRight("Diskon", "-" + formatRp(receipt.discount))); nl();
+  }
+  if (receipt.tax > 0) {
+    text(leftRight("Pajak", formatRp(receipt.tax))); nl();
+  }
+  text(line()); nl();
+
+  add(BOLD_ON);
+  text(leftRight("TOTAL", formatRp(receipt.total))); nl();
+  add(BOLD_OFF);
+
+  text(leftRight("Bayar (" + receipt.payment + ")", formatRp(receipt.cashPaid))); nl();
+  if (receipt.change > 0) {
+    text(leftRight("Kembalian", formatRp(receipt.change))); nl();
+  }
+
+  if (receipt.note) {
+    text(line()); nl();
+    text("Catatan: " + receipt.note); nl();
+  }
+
+  text(line()); nl();
+  add(ALIGN_CTR);
+  text("Terima kasih!"); nl();
+  text("Powered by Kasir-Pro"); nl();
+
+  add(FEED);
+  add(CUT);
+
+  return new Uint8Array(bytes);
+}
+
+// Hook untuk Bluetooth Printer
+function useBluetoothPrinter() {
+  const [device, setDevice]   = useState(null);
+  const [status, setStatus]   = useState("disconnected"); // disconnected | connecting | connected | printing | error
+  const [errMsg, setErrMsg]   = useState("");
+  const charRef = useRef(null);
+
+  const isSupported = typeof navigator !== "undefined" && "bluetooth" in navigator;
+
+  const connect = async () => {
+    if (!isSupported) { setErrMsg("Web Bluetooth tidak didukung browser ini. Gunakan Chrome Android."); setStatus("error"); return; }
+    try {
+      setStatus("connecting"); setErrMsg("");
+      const dev = await navigator.bluetooth.requestDevice({
+        // EPPOS RPP02 service UUID — thermal printer generic
+        filters: [
+          { namePrefix: "RPP" },
+          { namePrefix: "EPPOS" },
+          { namePrefix: "Printer" },
+          { namePrefix: "MPT" },
+          { services: ["000018f0-0000-1000-8000-00805f9b34fb"] },
+        ],
+        optionalServices: [
+          "000018f0-0000-1000-8000-00805f9b34fb",
+          "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+          "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+          "000018f0-0000-1000-8000-00805f9b34fb",
+        ],
+      });
+      setDevice(dev);
+      dev.addEventListener("gattserverdisconnected", () => { setStatus("disconnected"); charRef.current=null; });
+      const server = await dev.gatt.connect();
+
+      // Coba berbagai service UUID thermal printer
+      let char = null;
+      const serviceUUIDs = [
+        "000018f0-0000-1000-8000-00805f9b34fb",
+        "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+        "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+      ];
+      const charUUIDs = [
+        "00002af1-0000-1000-8000-00805f9b34fb",
+        "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f",
+        "49535343-8841-43f4-a8d4-ecbe34729bb3",
+      ];
+
+      for (const svcUUID of serviceUUIDs) {
+        try {
+          const svc = await server.getPrimaryService(svcUUID);
+          for (const cUUID of charUUIDs) {
+            try { char = await svc.getCharacteristic(cUUID); break; } catch {}
+          }
+          // Coba semua characteristics jika UUID spesifik gagal
+          if (!char) {
+            const chars = await svc.getCharacteristics();
+            for (const c of chars) {
+              if (c.properties.write || c.properties.writeWithoutResponse) { char = c; break; }
+            }
+          }
+          if (char) break;
+        } catch {}
+      }
+
+      if (!char) throw new Error("Karakteristik printer tidak ditemukan. Pastikan printer EPPOS RPP02 menyala dan dalam mode pairing.");
+      charRef.current = char;
+      setStatus("connected");
+    } catch (e) {
+      setStatus("error");
+      setErrMsg(e.message || "Gagal terhubung ke printer.");
+    }
+  };
+
+  const disconnect = async () => {
+    if (device?.gatt?.connected) { device.gatt.disconnect(); }
+    setDevice(null); charRef.current=null; setStatus("disconnected");
+  };
+
+  const print = async (data) => {
+    if (!charRef.current) { setErrMsg("Printer belum terhubung."); setStatus("error"); return false; }
+    try {
+      setStatus("printing");
+      // Kirim data dalam chunk 512 bytes (batas BLE MTU)
+      const CHUNK = 512;
+      for (let i = 0; i < data.length; i += CHUNK) {
+        const chunk = data.slice(i, i + CHUNK);
+        await charRef.current.writeValueWithoutResponse(chunk);
+        await new Promise(r => setTimeout(r, 60)); // delay antar chunk
+      }
+      setStatus("connected");
+      return true;
+    } catch (e) {
+      setStatus("error");
+      setErrMsg("Gagal mencetak: " + e.message);
+      return false;
+    }
+  };
+
+  return { device, status, errMsg, isSupported, connect, disconnect, print };
+}
+
 // ── CartPanel (standalone — no remount on parent re-render) ─────────────────
 function CartPanel({ cart, note, setNote, discount, setDiscount, discountType, setDiscountType,
   subtotal, discountAmt, taxAmt, total, settings, updateQty, removeFromCart, clearCart, setShowPayment }) {
@@ -1004,6 +1205,187 @@ function BarcodeModal({ onResult, onClose }) {
   );
 }
 
+// ── ESC/POS Thermal Printer (Web Bluetooth) ────────────────────────────────
+// Compatible: EPPOS RPP02, Xprinter, MUNBYN, Rongta
+
+const ESC = 0x1B;
+const GS  = 0x1D;
+
+function escpos(data) {
+  // Encode string ke bytes ESC/POS
+  const encoder = new TextEncoder();
+  return encoder.encode(data);
+}
+
+function buildReceipt(r, settings) {
+  const lines = [];
+
+  const center = (txt, width=32) => {
+    const pad = Math.max(0, Math.floor((width - txt.length) / 2));
+    return " ".repeat(pad) + txt;
+  };
+  const leftRight = (left, right, width=32) => {
+    const space = Math.max(1, width - left.length - right.length);
+    return left + " ".repeat(space) + right;
+  };
+  const divider = (char="-", width=32) => char.repeat(width);
+
+  // Header
+  lines.push(center(settings.storeName));
+  lines.push(center(settings.address));
+  lines.push(divider());
+  lines.push(`No: ${r.id.slice(-8)}`);
+  lines.push(`Tgl: ${new Date(r.date).toLocaleString("id-ID",{dateStyle:"short",timeStyle:"short"})}`);
+  lines.push(`Kasir: ${r.cashier||settings.cashier}`);
+  lines.push(divider());
+
+  // Items
+  r.items.forEach(it => {
+    const name = it.name.length > 20 ? it.name.slice(0,20) : it.name;
+    lines.push(name);
+    const qtyPrice = `  ${it.qty}x ${new Intl.NumberFormat("id-ID").format(it.price)}`;
+    const subtotal = new Intl.NumberFormat("id-ID").format(it.qty * it.price);
+    lines.push(leftRight(qtyPrice, subtotal));
+  });
+
+  lines.push(divider());
+
+  // Totals
+  const fRp = n => "Rp " + new Intl.NumberFormat("id-ID").format(n);
+  lines.push(leftRight("Subtotal", fRp(r.subtotal)));
+  if (r.discount > 0) lines.push(leftRight("Diskon", "-"+fRp(r.discount)));
+  if (r.tax > 0) lines.push(leftRight("Pajak", fRp(r.tax)));
+  lines.push(divider());
+  lines.push(leftRight("TOTAL", fRp(r.total)));
+  lines.push(leftRight(`Bayar(${r.payment})`, fRp(r.cashPaid)));
+  if (r.change > 0) lines.push(leftRight("Kembalian", fRp(r.change)));
+  if (r.note) { lines.push(divider()); lines.push("Catatan: "+r.note); }
+  lines.push(divider());
+  lines.push(center("Terima kasih!"));
+  lines.push(center("Kasir-Pro"));
+  lines.push(""); lines.push(""); lines.push(""); // feed paper
+
+  return lines.join("
+");
+}
+
+async function printViaBluetooth(receiptText, onStatus) {
+  try {
+    onStatus("Mencari printer...");
+
+    // Request Bluetooth device - filter untuk thermal printer umum
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [
+        { namePrefix: "RPP" },
+        { namePrefix: "EPPOS" },
+        { namePrefix: "Printer" },
+        { namePrefix: "BT" },
+        { namePrefix: "POS" },
+        { namePrefix: "XP" },
+        { services: ["000018f0-0000-1000-8000-00805f9b34fb"] },
+      ],
+      optionalServices: [
+        "000018f0-0000-1000-8000-00805f9b34fb",
+        "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+        "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+        "0000ff00-0000-1000-8000-00805f9b34fb",
+      ]
+    });
+
+    onStatus("Menghubungkan...");
+    const server = await device.gatt.connect();
+
+    onStatus("Mencari service...");
+
+    // Coba berbagai service UUID yang umum di thermal printer
+    const serviceUUIDs = [
+      "000018f0-0000-1000-8000-00805f9b34fb",
+      "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+      "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+      "0000ff00-0000-1000-8000-00805f9b34fb",
+    ];
+
+    let characteristic = null;
+
+    for (const svcUUID of serviceUUIDs) {
+      try {
+        const service = await server.getPrimaryService(svcUUID);
+        const chars = await service.getCharacteristics();
+        // Cari characteristic yang bisa di-write
+        for (const c of chars) {
+          if (c.properties.write || c.properties.writeWithoutResponse) {
+            characteristic = c;
+            break;
+          }
+        }
+        if (characteristic) break;
+      } catch { continue; }
+    }
+
+    if (!characteristic) {
+      // Coba ambil semua service
+      try {
+        const services = await server.getPrimaryServices();
+        for (const svc of services) {
+          const chars = await svc.getCharacteristics();
+          for (const c of chars) {
+            if (c.properties.write || c.properties.writeWithoutResponse) {
+              characteristic = c; break;
+            }
+          }
+          if (characteristic) break;
+        }
+      } catch {}
+    }
+
+    if (!characteristic) {
+      throw new Error("Characteristic write tidak ditemukan di printer ini");
+    }
+
+    onStatus("Mencetak...");
+
+    // ESC/POS initialize + content
+    const initCmd = new Uint8Array([ESC, 0x40]); // Initialize printer
+    const centerCmd = new Uint8Array([ESC, 0x61, 0x01]); // Center align
+    const leftCmd = new Uint8Array([ESC, 0x61, 0x00]); // Left align
+    const boldOn = new Uint8Array([ESC, 0x45, 0x01]);
+    const boldOff = new Uint8Array([ESC, 0x45, 0x00]);
+    const feedCut = new Uint8Array([GS, 0x56, 0x41, 0x03]); // Cut paper
+
+    const textBytes = new TextEncoder().encode(receiptText);
+
+    // Kirim dalam chunk 512 bytes agar tidak overflow
+    const CHUNK = 512;
+    const allBytes = new Uint8Array([...initCmd, ...leftCmd, ...textBytes, ...feedCut]);
+
+    for (let i = 0; i < allBytes.length; i += CHUNK) {
+      const chunk = allBytes.slice(i, i + CHUNK);
+      if (characteristic.properties.writeWithoutResponse) {
+        await characteristic.writeValueWithoutResponse(chunk);
+      } else {
+        await characteristic.writeValue(chunk);
+      }
+      await new Promise(r => setTimeout(r, 50)); // delay antar chunk
+    }
+
+    onStatus("✅ Selesai dicetak!");
+    setTimeout(() => onStatus(""), 3000);
+
+    // Disconnect
+    server.disconnect();
+    return true;
+
+  } catch (err) {
+    if (err.name === "NotFoundError") {
+      throw new Error("Tidak ada printer dipilih");
+    } else if (err.name === "NotSupportedError") {
+      throw new Error("Bluetooth tidak didukung browser ini. Gunakan Chrome Android.");
+    } else {
+      throw new Error(err.message || "Gagal terhubung ke printer");
+    }
+  }
+}
+
 // ── MAIN APP ────────────────────────────────────────────────────────────────
 export default function App() {
   const [page, setPage] = useState("pos");
@@ -1019,14 +1401,22 @@ export default function App() {
   const [showReceipt, setShowReceipt] = useState(null);
   const [showProductForm, setShowProductForm] = useState(null);
   const [showPosScanner, setShowPosScanner] = useState(false);
-  const [showPrinterSettings, setShowPrinterSettings] = useState(false);
   const [payMethod, setPayMethod] = useState("cash");
   const [cashPaid, setCashPaid] = useState("");
   const [toasts, setToasts] = useState([]);
-  const DEFAULT_SETTINGS = {storeName:"Kasir-Pro",address:"Jl. Merdeka No. 17",taxRate:10,taxEnabled:true,receiptPrint:true,lowStockAlert:10,cashier:"Budi",printerDevice:null};
+  const DEFAULT_SETTINGS = {storeName:"Kasir-Pro",address:"Jl. Merdeka No. 17",taxRate:10,taxEnabled:true,receiptPrint:true,lowStockAlert:10,cashier:"Budi"};
   const [settings, setSettings] = useState(()=>{try{const s=localStorage.getItem("kasir_settings");return s?{...DEFAULT_SETTINGS,...JSON.parse(s)}:DEFAULT_SETTINGS;}catch{return DEFAULT_SETTINGS;}});
   const [trxSearch, setTrxSearch] = useState("");
   const [prodSearch, setProdSearch] = useState("");
+  const [printerStatus, setPrinterStatus] = useState("");
+  const [isPrinting, setIsPrinting] = useState(false);
+
+  // ── Catatan Ternak ──
+  const [pembelian, setPembelian] = useState(()=>{try{const s=localStorage.getItem("kasir_pembelian");return s?JSON.parse(s):[];}catch{return [];}});
+  const [penjualan, setPenjualan] = useState(()=>{try{const s=localStorage.getItem("kasir_penjualan");return s?JSON.parse(s):[];}catch{return [];}});
+  const [showFormPembelian, setShowFormPembelian] = useState(false);
+  const [showFormPenjualan, setShowFormPenjualan] = useState(false);
+  const [tabTernak, setTabTernak] = useState("pembelian"); // pembelian | penjualan | rekap
   const [darkMode, setDarkMode] = useState(()=>{
     try{ return localStorage.getItem("kasir_theme")==="light"?false:true; }catch{ return true; }
   });
@@ -1042,6 +1432,8 @@ export default function App() {
   useEffect(()=>{try{localStorage.setItem("kasir_products",JSON.stringify(products));}catch{}},[products]);
   useEffect(()=>{try{localStorage.setItem("kasir_transactions",JSON.stringify(transactions));}catch{}},[transactions]);
   useEffect(()=>{try{localStorage.setItem("kasir_settings",JSON.stringify(settings));}catch{}},[settings]);
+  useEffect(()=>{try{localStorage.setItem("kasir_pembelian",JSON.stringify(pembelian));}catch{}},[pembelian]);
+  useEffect(()=>{try{localStorage.setItem("kasir_penjualan",JSON.stringify(penjualan));}catch{}},[penjualan]);
 
   const addToast = useCallback((msg,type="success")=>{
     const id=Date.now();
@@ -1078,25 +1470,12 @@ export default function App() {
     return matchCat&&matchQ;
   });
 
-  const handleCheckout = async () => {
+  const handleCheckout = () => {
     if(cart.length===0){addToast("Keranjang kosong!","error");return;}
     if(payMethod==="cash"&&cashPaidNum<total){addToast("Uang kurang!","error");return;}
     const trx={id:genId(),date:new Date().toISOString(),items:cart.map(x=>({name:x.name,qty:x.qty,price:x.price})),subtotal,discount:discountAmt,tax:taxAmt,total,payment:payMethod,cashPaid:payMethod==="cash"?cashPaidNum:total,change:payMethod==="cash"?Math.max(0,change):0,cashier:settings.cashier,note};
     setProducts(ps=>ps.map(p=>{const ci=cart.find(x=>x.id===p.id);return ci?{...p,stock:p.stock-ci.qty}:p;}));
     setTransactions(t=>[trx,...t]);
-    
-    // Try print ke printer jika terkoneksi
-    if(settings.printerDevice){
-      try{
-        const printerDeviceObj=JSON.parse(settings.printerDevice);
-        if(printerDeviceObj.connected){
-          const printResult=await PrinterService.printReceipt(trx,settings);
-          if(printResult.success){addToast("✅ Struk dicetak!","success");}
-          else{addToast("⚠️ Print gagal, tapi transaksi tersimpan","error");}
-        }
-      }catch(error){console.error("Print error:",error);}
-    }
-    
     setShowPayment(false); setShowReceipt(trx); clearCart(); setCashPaid("");
     addToast(`Transaksi berhasil! ${formatRp(trx.total)}`,"success");
   };
@@ -1115,11 +1494,12 @@ export default function App() {
     ["cart","shopping_bag","Pesanan"],
     ["dashboard","analytics","Dasbor"],
     ["transactions","receipt_long","Transaksi"],
+    ["ternak","book","Catatan"],
     ["settings","settings","Setting"]
   ];
   const DESKTOP_NAVS = [
     ["pos","Kasir"],["dashboard","Dasbor"],["products","Produk"],
-    ["transactions","Transaksi"],["settings","Setting"]
+    ["transactions","Transaksi"],["ternak","Catatan"],["settings","Setting"]
   ];
 
   // Try to load logo from public
@@ -1379,9 +1759,266 @@ export default function App() {
           )}
 
           {/* ── SETTINGS ── */}
+          {/* ── CATATAN TERNAK ── */}
+          {page==="ternak" && (
+            <div className="page-content">
+              <div className="page-title">📋 Catatan Usaha</div>
+
+              {/* Tab */}
+              <div style={{display:"flex",gap:8,marginBottom:16,background:"var(--md-surface-2)",borderRadius:12,padding:4}}>
+                {[["pembelian","Pembelian","shopping_cart"],["penjualan","Penjualan","sell"],["rekap","Rekap","summarize"]].map(([k,label,icon])=>(
+                  <button key={k} onClick={()=>setTabTernak(k)} style={{
+                    flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+                    padding:"10px 8px",borderRadius:10,border:"none",cursor:"pointer",
+                    background:tabTernak===k?"var(--md-primary-container)":"transparent",
+                    color:tabTernak===k?"var(--md-on-primary-container)":"var(--md-on-surface-variant)",
+                    fontWeight:600,fontSize:12,fontFamily:"var(--font-brand)",transition:"all .2s",
+                  }}>
+                    <span className="material-icons-round" style={{fontSize:16}}>{icon}</span>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── TAB PEMBELIAN ── */}
+              {tabTernak==="pembelian" && (
+                <div>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div style={{fontSize:14,fontWeight:600,color:"var(--md-on-surface-variant)"}}>
+                      {pembelian.length} catatan pembelian
+                    </div>
+                    <button className="btn btn-filled" style={{padding:"8px 14px",fontSize:13}} onClick={()=>setShowFormPembelian(true)}>
+                      + Tambah
+                    </button>
+                  </div>
+
+                  {pembelian.length===0 && (
+                    <div style={{textAlign:"center",padding:"40px 0",color:"var(--md-on-surface-variant)"}}>
+                      <span className="material-icons-round" style={{fontSize:48,display:"block",marginBottom:8,opacity:.4}}>shopping_cart</span>
+                      Belum ada catatan pembelian
+                    </div>
+                  )}
+
+                  {pembelian.slice().reverse().map((item,i)=>(
+                    <div key={item.id} style={{
+                      background:"var(--md-surface-2)",borderRadius:12,
+                      border:"1px solid var(--md-outline-variant)",
+                      padding:"12px 14px",marginBottom:8,position:"relative",
+                    }}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                        <div>
+                          <div style={{fontSize:14,fontWeight:700,color:"var(--md-on-surface)",marginBottom:2}}>{item.jenis}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.tanggal} · {item.tempat}</div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:14,fontWeight:700,color:"var(--md-error)"}}>-{formatRp(item.harga*item.jumlah)}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.jumlah} {item.satuan} × {formatRp(item.harga)}</div>
+                        </div>
+                      </div>
+                      {item.catatan && <div style={{fontSize:12,color:"var(--md-on-surface-variant)",fontStyle:"italic"}}>📝 {item.catatan}</div>}
+                      <button onClick={()=>{if(window.confirm("Hapus catatan ini?")){setPembelian(p=>p.filter(x=>x.id!==item.id));}}}
+                        style={{position:"absolute",top:8,right:8,background:"transparent",border:"none",cursor:"pointer",color:"var(--md-on-surface-variant)",padding:4}}>
+                        <span className="material-icons-round" style={{fontSize:18}}>delete_outline</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── TAB PENJUALAN ── */}
+              {tabTernak==="penjualan" && (
+                <div>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div style={{fontSize:14,fontWeight:600,color:"var(--md-on-surface-variant)"}}>
+                      {penjualan.length} catatan penjualan
+                    </div>
+                    <button className="btn btn-filled" style={{padding:"8px 14px",fontSize:13}} onClick={()=>setShowFormPenjualan(true)}>
+                      + Tambah
+                    </button>
+                  </div>
+
+                  {penjualan.length===0 && (
+                    <div style={{textAlign:"center",padding:"40px 0",color:"var(--md-on-surface-variant)"}}>
+                      <span className="material-icons-round" style={{fontSize:48,display:"block",marginBottom:8,opacity:.4}}>sell</span>
+                      Belum ada catatan penjualan
+                    </div>
+                  )}
+
+                  {penjualan.slice().reverse().map((item,i)=>(
+                    <div key={item.id} style={{
+                      background:"var(--md-surface-2)",borderRadius:12,
+                      border:"1px solid var(--md-outline-variant)",
+                      padding:"12px 14px",marginBottom:8,position:"relative",
+                    }}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                        <div>
+                          <div style={{fontSize:14,fontWeight:700,color:"var(--md-on-surface)",marginBottom:2}}>
+                            {item.produk} — {item.jumlah} {item.satuan}
+                          </div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.tanggal}</div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:14,fontWeight:700,color:"var(--md-success)"}}>+{formatRp(item.harga*item.jumlah)}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.jumlah} × {formatRp(item.harga)}</div>
+                        </div>
+                      </div>
+                      {item.catatan && <div style={{fontSize:12,color:"var(--md-on-surface-variant)",fontStyle:"italic"}}>📝 {item.catatan}</div>}
+                      <button onClick={()=>{if(window.confirm("Hapus catatan ini?")){setPenjualan(p=>p.filter(x=>x.id!==item.id));}}}
+                        style={{position:"absolute",top:8,right:8,background:"transparent",border:"none",cursor:"pointer",color:"var(--md-on-surface-variant)",padding:4}}>
+                        <span className="material-icons-round" style={{fontSize:18}}>delete_outline</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── TAB REKAP ── */}
+              {tabTernak==="rekap" && (()=>{
+                const totalBeli = pembelian.reduce((s,x)=>s+(x.harga*x.jumlah),0);
+                const totalJual = penjualan.reduce((s,x)=>s+(x.harga*x.jumlah),0);
+                const laba = totalJual - totalBeli;
+
+                // Rekap pembelian per jenis
+                const rekapBeli = {};
+                pembelian.forEach(x=>{
+                  if(!rekapBeli[x.jenis]) rekapBeli[x.jenis]={total:0,count:0};
+                  rekapBeli[x.jenis].total += x.harga*x.jumlah;
+                  rekapBeli[x.jenis].count += 1;
+                });
+
+                // Rekap penjualan per produk
+                const rekapJual = {};
+                penjualan.forEach(x=>{
+                  if(!rekapJual[x.produk]) rekapJual[x.produk]={total:0,jumlah:0};
+                  rekapJual[x.produk].total += x.harga*x.jumlah;
+                  rekapJual[x.produk].jumlah += Number(x.jumlah);
+                });
+
+                return (
+                  <div>
+                    {/* Ringkasan */}
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+                      <div style={{background:"rgba(255,180,171,.1)",border:"1px solid rgba(255,180,171,.3)",borderRadius:12,padding:"14px 12px"}}>
+                        <div style={{fontSize:11,fontWeight:600,color:"var(--md-error)",textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Total Pembelian</div>
+                        <div style={{fontSize:18,fontWeight:800,color:"var(--md-error)",fontFamily:"var(--font-mono)"}}>{formatRp(totalBeli)}</div>
+                        <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginTop:4}}>{pembelian.length} transaksi</div>
+                      </div>
+                      <div style={{background:"rgba(110,231,183,.1)",border:"1px solid rgba(110,231,183,.3)",borderRadius:12,padding:"14px 12px"}}>
+                        <div style={{fontSize:11,fontWeight:600,color:"var(--md-success)",textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Total Penjualan</div>
+                        <div style={{fontSize:18,fontWeight:800,color:"var(--md-success)",fontFamily:"var(--font-mono)"}}>{formatRp(totalJual)}</div>
+                        <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginTop:4}}>{penjualan.length} transaksi</div>
+                      </div>
+                    </div>
+
+                    {/* Laba/Rugi */}
+                    <div style={{
+                      background:laba>=0?"rgba(110,231,183,.1)":"rgba(255,180,171,.1)",
+                      border:`1px solid ${laba>=0?"rgba(110,231,183,.3)":"rgba(255,180,171,.3)"}`,
+                      borderRadius:12,padding:"14px 16px",marginBottom:16,
+                      display:"flex",justifyContent:"space-between",alignItems:"center",
+                    }}>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:600,color:"var(--md-on-surface-variant)"}}>{laba>=0?"Laba Bersih":"Rugi"}</div>
+                        <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginTop:2}}>Penjualan - Pembelian</div>
+                      </div>
+                      <div style={{fontSize:22,fontWeight:800,color:laba>=0?"var(--md-success)":"var(--md-error)",fontFamily:"var(--font-mono)"}}>
+                        {laba>=0?"+":""}{formatRp(laba)}
+                      </div>
+                    </div>
+
+                    {/* Rekap Pembelian per Jenis */}
+                    <div className="m3-card">
+                      <h4>📥 Rekap Pembelian per Jenis</h4>
+                      {Object.keys(rekapBeli).length===0 && <div style={{color:"var(--md-on-surface-variant)",fontSize:13}}>Belum ada data</div>}
+                      {Object.entries(rekapBeli).sort((a,b)=>b[1].total-a[1].total).map(([jenis,data])=>(
+                        <div key={jenis} className="list-row">
+                          <span className="lr-name">{jenis}</span>
+                          <span style={{fontSize:10,color:"var(--md-on-surface-variant)"}}>{data.count}x</span>
+                          <span style={{fontFamily:"var(--font-mono)",fontSize:12,color:"var(--md-error)",fontWeight:700}}>{formatRp(data.total)}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Rekap Penjualan per Produk */}
+                    <div className="m3-card">
+                      <h4>📤 Rekap Penjualan per Produk</h4>
+                      {Object.keys(rekapJual).length===0 && <div style={{color:"var(--md-on-surface-variant)",fontSize:13}}>Belum ada data</div>}
+                      {Object.entries(rekapJual).sort((a,b)=>b[1].total-a[1].total).map(([produk,data])=>(
+                        <div key={produk} className="list-row">
+                          <span className="lr-name">{produk}</span>
+                          <span style={{fontSize:10,color:"var(--md-on-surface-variant)"}}>{data.jumlah} pcs</span>
+                          <span style={{fontFamily:"var(--font-mono)",fontSize:12,color:"var(--md-success)",fontWeight:700}}>{formatRp(data.total)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+            </div>
+          )}
+
           {page==="settings" && (
             <div className="page-content">
               <div className="page-title">Pengaturan</div>
+
+              {/* Printer Settings */}
+              <div className="m3-settings-section">
+                <div className="settings-section-title">🖨️ Printer Bluetooth</div>
+                <div className="settings-row">
+                  <div>
+                    <div className="slbl">EPPOS RPP02 / Thermal BT</div>
+                    <div className="sval">Pastikan Bluetooth aktif & printer menyala</div>
+                  </div>
+                  <button className="btn btn-outlined" style={{padding:"8px 14px",fontSize:12,whiteSpace:"nowrap"}}
+                    onClick={async()=>{
+                      if(!navigator.bluetooth){addToast("Butuh Chrome Android 56+","error");return;}
+                      setIsPrinting(true);
+                      try {
+                        const testText = "================================
+       TEST CETAK KASIR-PRO
+================================
+Printer terhubung!
+" +
+                          new Date().toLocaleString("id-ID") + "
+
+
+";
+                        await printViaBluetooth(testText, setPrinterStatus);
+                        addToast("✅ Test print berhasil!");
+                      } catch(e) {
+                        addToast("❌ "+e.message,"error");
+                        setPrinterStatus("❌ "+e.message);
+                      } finally { setIsPrinting(false); }
+                    }}>
+                    {isPrinting?"⏳ Proses...":"🔍 Test Print"}
+                  </button>
+                </div>
+                {printerStatus && (
+                  <div style={{
+                    margin:"0 16px 12px",padding:"8px 12px",borderRadius:8,fontSize:12,
+                    background:printerStatus.startsWith("✅")?"rgba(110,231,183,.1)":"rgba(255,180,171,.1)",
+                    color:printerStatus.startsWith("✅")?"var(--md-success)":"var(--md-error)",
+                    border:"1px solid",
+                    borderColor:printerStatus.startsWith("✅")?"rgba(110,231,183,.3)":"rgba(255,180,171,.3)",
+                  }}>{printerStatus}</div>
+                )}
+                <div className="settings-row">
+                  <div>
+                    <div className="slbl">Lebar Kertas</div>
+                    <div className="sval">RPP02 = 58mm (32 karakter)</div>
+                  </div>
+                  <span style={{fontSize:13,color:"var(--md-on-surface-variant)"}}>58mm</span>
+                </div>
+                <div className="settings-row">
+                  <div>
+                    <div className="slbl">Cara konek</div>
+                    <div className="sval">1. Aktifkan Bluetooth HP{"
+"}2. Nyalakan printer{"
+"}3. Tekan Cetak → pilih RPP02</div>
+                  </div>
+                </div>
+              </div>
 
               <div className="m3-settings-section">
                 <div className="settings-section-title">📦 Manajemen Produk</div>
@@ -1407,19 +2044,6 @@ export default function App() {
               <div className="m3-settings-section">
                 <div className="settings-section-title">📦 Stok</div>
                 <div className="settings-row"><div><div className="slbl">Batas Stok Rendah</div></div><input className="m3-settings-input" type="number" value={settings.lowStockAlert} onChange={e=>setSettings(s=>({...s,lowStockAlert:parseInt(e.target.value)||0}))} /></div>
-              </div>
-
-              <div className="m3-settings-section">
-                <div className="settings-section-title">🖨️ Printer Bluetooth</div>
-                <div className="settings-row">
-                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%"}}>
-                    <div>
-                      <div className="slbl">Epson RPPO2 / Printer ESC-POS</div>
-                      <div className="sval" style={{marginTop:4}}>{settings.printerDevice?`✅ ${JSON.parse(settings.printerDevice).name}`:"❌ Tidak terhubung"}</div>
-                    </div>
-                    <button className="btn btn-filled" onClick={()=>setShowPrinterSettings(true)} style={{padding:"8px 16px",fontSize:13}}>Atur</button>
-                  </div>
-                </div>
               </div>
 
               {/* Tampilan */}
@@ -1592,7 +2216,122 @@ export default function App() {
             </div>
             <div className="sheet-footer">
               <button className="btn btn-outlined" onClick={()=>setShowReceipt(null)}>Tutup</button>
-              <button className="btn btn-filled" onClick={async()=>{if(settings.printerDevice){try{const result=await PrinterService.printReceipt(showReceipt,settings);if(result.success){addToast("✅ Struk dicetak!");}else{addToast("❌ Error print: "+result.error,"error");}}catch(error){addToast("❌ Error: "+error.message,"error");}}else{window.print();addToast("Mencetak ke browser...");}}} >🖨️ Cetak</button>
+              {printerStatus && (
+                <div style={{
+                  fontSize:12,padding:"6px 12px",borderRadius:8,marginBottom:4,
+                  background: printerStatus.startsWith("✅")?"rgba(110,231,183,.15)":"rgba(194,231,255,.1)",
+                  color: printerStatus.startsWith("✅")?"var(--md-success)":"var(--md-primary)",
+                  border: `1px solid ${printerStatus.startsWith("✅")?"rgba(110,231,183,.3)":"rgba(194,231,255,.2)"}`,
+                  textAlign:"center", fontFamily:"var(--font-brand)",
+                }}>
+                  {isPrinting && "⏳ "}{printerStatus}
+                </div>
+              )}
+              <button className="btn btn-filled" onClick={async ()=>{
+                // Cek Web Bluetooth support
+                if (!navigator.bluetooth) {
+                  addToast("Web Bluetooth tidak didukung. Gunakan Chrome Android 56+","error");
+                  return;
+                }
+                const r = showReceipt;
+                const receiptText = buildReceipt(r, settings);
+                setIsPrinting(true);
+                try {
+                  await printViaBluetooth(receiptText, setPrinterStatus);
+                  addToast("✅ Struk berhasil dicetak!");
+                } catch(err) {
+                  setPrinterStatus("❌ "+err.message);
+                  addToast("Gagal: "+err.message, "error");
+                } finally {
+                  setIsPrinting(false);
+                }
+              }} disabled={isPrinting}>
+                {isPrinting?"⏳ Mencetak...":"🖨️ Cetak Bluetooth"}
+              </button>
+              <button className="btn btn-outlined" style={{marginTop:4}} onClick={()=>{
+                // Fallback: buka halaman cetak
+                const r = showReceipt;
+                const html = `<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width"/>
+<title>Struk ${r.id}</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: monospace; font-size: 12px; padding: 8px; color:#000; background:#fff; }
+  h2 { font-size:15px; text-align:center; margin-bottom:2px; }
+  p { font-size:11px; text-align:center; color:#555; }
+  .divider { border-top:1px dashed #999; margin:6px 0; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:2px 0; vertical-align:top; }
+  td:last-child { text-align:right; }
+  .grand td { font-weight:700; font-size:13px; border-top:1px dashed #999; padding-top:5px; }
+  .footer { text-align:center; margin-top:8px; font-size:10px; color:#777; }
+  @media print {
+    body { padding:0; }
+    @page { margin:2mm; size: 80mm auto; }
+  }
+</style>
+</head><body>
+<h2>${settings.storeName}</h2>
+<p>${settings.address}</p>
+<div class="divider"></div>
+<p style="text-align:left">No: ${r.id}</p>
+<p style="text-align:left">Tgl: ${formatDate(r.date)}</p>
+<p style="text-align:left">Kasir: ${r.cashier||settings.cashier}</p>
+<div class="divider"></div>
+<table>
+  <tbody>
+    ${r.items.map(it=>`<tr><td>${it.name}</td><td style="text-align:center;min-width:30px">${it.qty}x</td><td style="text-align:right;min-width:70px">${formatRp(it.price)}</td><td style="text-align:right;min-width:75px">${formatRp(it.qty*it.price)}</td></tr>`).join("")}
+  </tbody>
+</table>
+<div class="divider"></div>
+<table>
+  <tbody>
+    <tr><td>Subtotal</td><td style="text-align:right">${formatRp(r.subtotal)}</td></tr>
+    ${r.discount>0?`<tr><td>Diskon</td><td style="text-align:right">-${formatRp(r.discount)}</td></tr>`:""}
+    ${r.tax>0?`<tr><td>Pajak</td><td style="text-align:right">${formatRp(r.tax)}</td></tr>`:""}
+    <tr class="grand"><td>TOTAL</td><td style="text-align:right">${formatRp(r.total)}</td></tr>
+    <tr><td>Bayar (${r.payment})</td><td style="text-align:right">${formatRp(r.cashPaid)}</td></tr>
+    ${r.change>0?`<tr><td>Kembalian</td><td style="text-align:right">${formatRp(r.change)}</td></tr>`:""}
+  </tbody>
+</table>
+${r.note?`<div class="divider"></div><p style="text-align:left">Catatan: ${r.note}</p>`:""}
+<div class="divider"></div>
+<div class="footer"><p>Terima kasih!</p><p>Powered by Kasir-Pro</p></div>
+<script>window.onload=()=>{window.print();setTimeout(()=>window.close(),1000);}<\/script>
+</body></html>`;
+
+                // Deteksi mobile atau desktop
+                const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+                if (isMobile) {
+                  // Mobile: buka tab baru lalu print
+                  const win = window.open("","_blank");
+                  if (win) {
+                    win.document.write(html);
+                    win.document.close();
+                    addToast("Halaman cetak dibuka — pilih printer");
+                  } else {
+                    // Popup diblokir — download sebagai file HTML
+                    const blob = new Blob([html], {type:"text/html"});
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url; a.download = `struk-${r.id}.html`;
+                    a.click(); URL.revokeObjectURL(url);
+                    addToast("Struk diunduh — buka lalu cetak");
+                  }
+                } else {
+                  // Desktop: langsung print
+                  const win = window.open("","_blank","width=400,height=600");
+                  if (win) {
+                    win.document.write(html);
+                    win.document.close();
+                  } else {
+                    window.print();
+                  }
+                  addToast("Mencetak...");
+                }
+              }}>🖨️ Cetak (Browser)</button>
             </div>
           </div>
         </div>
@@ -1608,20 +2347,6 @@ export default function App() {
             else{setProducts(ps=>[...ps,{...p,id:Date.now()}]);addToast("Produk ditambahkan!");}
             setShowProductForm(null);
           }}
-        />
-      )}
-
-      {/* ── Printer Settings Modal ── */}
-      {showPrinterSettings && (
-        <PrinterSettings
-          onClose={() => setShowPrinterSettings(false)}
-          settings={settings}
-          onSettingsChange={(newSettings) => {
-            setSettings(newSettings);
-            localStorage.setItem("kasir_settings", JSON.stringify(newSettings));
-            addToast("✅ Pengaturan printer disimpan!");
-          }}
-          addToast={addToast}
         />
       )}
 
