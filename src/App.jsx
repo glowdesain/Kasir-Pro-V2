@@ -2205,7 +2205,85 @@ export default function App() {
             <div className="page-content">
               <div className="page-title">Pengaturan</div>
 
-              {/* Printer Settings */}
+              {/* 1. Informasi Toko */}
+              <div className="m3-settings-section">
+                <div className="settings-section-title">🏪 Informasi Toko</div>
+                <div className="settings-row"><div><div className="slbl">Nama Toko</div></div><input className="m3-settings-input" value={settings.storeName} onChange={e=>setSettings(s=>({...s,storeName:e.target.value}))} /></div>
+                <div className="settings-row"><div><div className="slbl">Alamat</div></div><input className="m3-settings-input" value={settings.address} onChange={e=>setSettings(s=>({...s,address:e.target.value}))} /></div>
+                <div className="settings-row"><div><div className="slbl">Nama Kasir</div></div><input className="m3-settings-input" value={settings.cashier} onChange={e=>setSettings(s=>({...s,cashier:e.target.value}))} /></div>
+              </div>
+
+              {/* 2. Reset Data */}
+              <div className="m3-settings-section">
+                <div className="settings-section-title">🗑️ Reset Data</div>
+                <div className="settings-row"><div><div className="slbl">Hapus Semua Transaksi</div><div className="sval">Data produk tidak ikut terhapus</div></div><button className="btn-danger-tonal" onClick={()=>{if(window.confirm("Hapus semua transaksi?")){setTransactions([]);addToast("Semua transaksi dihapus");}}}>Hapus</button></div>
+                <div className="settings-row"><div><div className="slbl">Reset Semua Data</div><div className="sval">Kembali ke data awal</div></div><button className="btn-danger-tonal" onClick={()=>{if(window.confirm("Reset semua data?")){setProducts(INITIAL_PRODUCTS);setTransactions(INITIAL_TRANSACTIONS);addToast("Data direset");}}}>Reset</button></div>
+              </div>
+
+              {/* 3. Tampilan */}
+              <div className="m3-settings-section">
+                <div className="settings-section-title">🎨 Tampilan</div>
+                <div className="settings-row">
+                  <div>
+                    <div className="slbl">Mode Tampilan</div>
+                    <div className="sval">{darkMode?"Mode Gelap aktif":"Mode Terang aktif"}</div>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <button
+                      onClick={()=>setDarkMode(false)}
+                      style={{
+                        display:"flex",flexDirection:"column",alignItems:"center",gap:4,
+                        padding:"10px 16px",borderRadius:12,border:"2px solid",
+                        borderColor:!darkMode?"var(--md-primary)":"var(--md-outline-variant)",
+                        background:!darkMode?"var(--md-primary-container)":"transparent",
+                        color:!darkMode?"var(--md-on-primary-container)":"var(--md-on-surface-variant)",
+                        cursor:"pointer",transition:"all .2s",minWidth:70,
+                      }}
+                    >
+                      <span className="material-icons-round" style={{fontSize:22}}>light_mode</span>
+                      <span style={{fontSize:11,fontWeight:600,fontFamily:"var(--font-brand)"}}>Terang</span>
+                    </button>
+                    <button
+                      onClick={()=>setDarkMode(true)}
+                      style={{
+                        display:"flex",flexDirection:"column",alignItems:"center",gap:4,
+                        padding:"10px 16px",borderRadius:12,border:"2px solid",
+                        borderColor:darkMode?"var(--md-primary)":"var(--md-outline-variant)",
+                        background:darkMode?"var(--md-primary-container)":"transparent",
+                        color:darkMode?"var(--md-on-primary-container)":"var(--md-on-surface-variant)",
+                        cursor:"pointer",transition:"all .2s",minWidth:70,
+                      }}
+                    >
+                      <span className="material-icons-round" style={{fontSize:22}}>dark_mode</span>
+                      <span style={{fontSize:11,fontWeight:600,fontFamily:"var(--font-brand)"}}>Gelap</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. Pajak */}
+              <div className="m3-settings-section">
+                <div className="settings-section-title">💰 Pajak</div>
+                <div className="settings-row"><div><div className="slbl">Aktifkan Pajak</div><div className="sval">PPN / Pajak penjualan</div></div><button className={`m3-toggle${settings.taxEnabled?" on":""}`} onClick={()=>setSettings(s=>({...s,taxEnabled:!s.taxEnabled}))} /></div>
+                <div className="settings-row"><div><div className="slbl">Persentase Pajak (%)</div></div><input className="m3-settings-input" type="number" value={settings.taxRate} onChange={e=>setSettings(s=>({...s,taxRate:parseFloat(e.target.value)||0}))} /></div>
+              </div>
+
+              {/* 5. Stok */}
+              <div className="m3-settings-section">
+                <div className="settings-section-title">📦 Stok</div>
+                <div className="settings-row"><div><div className="slbl">Batas Stok Rendah</div></div><input className="m3-settings-input" type="number" value={settings.lowStockAlert} onChange={e=>setSettings(s=>({...s,lowStockAlert:parseInt(e.target.value)||0}))} /></div>
+              </div>
+
+              {/* 6. Manajemen Produk */}
+              <div className="m3-settings-section">
+                <div className="settings-section-title">📦 Manajemen Produk</div>
+                <div className="settings-row">
+                  <div><div className="slbl">Kelola Produk</div><div className="sval">Tambah, edit, hapus produk & stok</div></div>
+                  <button className="btn btn-filled" style={{padding:"8px 16px",fontSize:13}} onClick={()=>setPage("products")}>Buka →</button>
+                </div>
+              </div>
+
+              {/* 7. Printer Bluetooth GATT */}
               <div className="m3-settings-section">
                 <div className="settings-section-title">🖨️ Printer Bluetooth GATT</div>
 
@@ -2280,78 +2358,6 @@ export default function App() {
                   <div><div className="slbl">Protocol</div><div className="sval">Web Bluetooth GATT / ESC-POS</div></div>
                   <span style={{fontSize:11,color:"var(--md-success)",fontWeight:600}}>GATT</span>
                 </div>
-              </div>
-              <div className="m3-settings-section">
-                <div className="settings-section-title">📦 Manajemen Produk</div>
-                <div className="settings-row">
-                  <div><div className="slbl">Kelola Produk</div><div className="sval">Tambah, edit, hapus produk & stok</div></div>
-                  <button className="btn btn-filled" style={{padding:"8px 16px",fontSize:13}} onClick={()=>setPage("products")}>Buka →</button>
-                </div>
-              </div>
-
-              <div className="m3-settings-section">
-                <div className="settings-section-title">🏪 Informasi Toko</div>
-                <div className="settings-row"><div><div className="slbl">Nama Toko</div></div><input className="m3-settings-input" value={settings.storeName} onChange={e=>setSettings(s=>({...s,storeName:e.target.value}))} /></div>
-                <div className="settings-row"><div><div className="slbl">Alamat</div></div><input className="m3-settings-input" value={settings.address} onChange={e=>setSettings(s=>({...s,address:e.target.value}))} /></div>
-                <div className="settings-row"><div><div className="slbl">Nama Kasir</div></div><input className="m3-settings-input" value={settings.cashier} onChange={e=>setSettings(s=>({...s,cashier:e.target.value}))} /></div>
-              </div>
-
-              <div className="m3-settings-section">
-                <div className="settings-section-title">💰 Pajak</div>
-                <div className="settings-row"><div><div className="slbl">Aktifkan Pajak</div><div className="sval">PPN / Pajak penjualan</div></div><button className={`m3-toggle${settings.taxEnabled?" on":""}`} onClick={()=>setSettings(s=>({...s,taxEnabled:!s.taxEnabled}))} /></div>
-                <div className="settings-row"><div><div className="slbl">Persentase Pajak (%)</div></div><input className="m3-settings-input" type="number" value={settings.taxRate} onChange={e=>setSettings(s=>({...s,taxRate:parseFloat(e.target.value)||0}))} /></div>
-              </div>
-
-              <div className="m3-settings-section">
-                <div className="settings-section-title">📦 Stok</div>
-                <div className="settings-row"><div><div className="slbl">Batas Stok Rendah</div></div><input className="m3-settings-input" type="number" value={settings.lowStockAlert} onChange={e=>setSettings(s=>({...s,lowStockAlert:parseInt(e.target.value)||0}))} /></div>
-              </div>
-
-              {/* Tampilan */}
-              <div className="m3-settings-section">
-                <div className="settings-section-title">🎨 Tampilan</div>
-                <div className="settings-row">
-                  <div>
-                    <div className="slbl">Mode Tampilan</div>
-                    <div className="sval">{darkMode?"Mode Gelap aktif":"Mode Terang aktif"}</div>
-                  </div>
-                  <div style={{display:"flex",alignItems:"center",gap:10}}>
-                    <button
-                      onClick={()=>setDarkMode(false)}
-                      style={{
-                        display:"flex",flexDirection:"column",alignItems:"center",gap:4,
-                        padding:"10px 16px",borderRadius:12,border:"2px solid",
-                        borderColor:!darkMode?"var(--md-primary)":"var(--md-outline-variant)",
-                        background:!darkMode?"var(--md-primary-container)":"transparent",
-                        color:!darkMode?"var(--md-on-primary-container)":"var(--md-on-surface-variant)",
-                        cursor:"pointer",transition:"all .2s",minWidth:70,
-                      }}
-                    >
-                      <span className="material-icons-round" style={{fontSize:22}}>light_mode</span>
-                      <span style={{fontSize:11,fontWeight:600,fontFamily:"var(--font-brand)"}}>Terang</span>
-                    </button>
-                    <button
-                      onClick={()=>setDarkMode(true)}
-                      style={{
-                        display:"flex",flexDirection:"column",alignItems:"center",gap:4,
-                        padding:"10px 16px",borderRadius:12,border:"2px solid",
-                        borderColor:darkMode?"var(--md-primary)":"var(--md-outline-variant)",
-                        background:darkMode?"var(--md-primary-container)":"transparent",
-                        color:darkMode?"var(--md-on-primary-container)":"var(--md-on-surface-variant)",
-                        cursor:"pointer",transition:"all .2s",minWidth:70,
-                      }}
-                    >
-                      <span className="material-icons-round" style={{fontSize:22}}>dark_mode</span>
-                      <span style={{fontSize:11,fontWeight:600,fontFamily:"var(--font-brand)"}}>Gelap</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="m3-settings-section">
-                <div className="settings-section-title">🗑️ Reset Data</div>
-                <div className="settings-row"><div><div className="slbl">Hapus Semua Transaksi</div><div className="sval">Data produk tidak ikut terhapus</div></div><button className="btn-danger-tonal" onClick={()=>{if(window.confirm("Hapus semua transaksi?")){setTransactions([]);addToast("Semua transaksi dihapus");}}}>Hapus</button></div>
-                <div className="settings-row"><div><div className="slbl">Reset Semua Data</div><div className="sval">Kembali ke data awal</div></div><button className="btn-danger-tonal" onClick={()=>{if(window.confirm("Reset semua data?")){setProducts(INITIAL_PRODUCTS);setTransactions(INITIAL_TRANSACTIONS);addToast("Data direset");}}}>Reset</button></div>
               </div>
             </div>
           )}
