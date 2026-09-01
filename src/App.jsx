@@ -1235,7 +1235,7 @@ function ProductFormModal({ product, onClose, onSave }) {
           <div className="form-group"><label className="form-label">Nama Produk *</label><input className="m3-form-input" value={form.name} onChange={e=>set("name",e.target.value)} placeholder="Nama produk" /></div>
           <div className="form-row-2">
             <div className="form-group"><label className="form-label">Kategori</label><select className="m3-form-select" value={form.category} onChange={e=>set("category",e.target.value)}><option>Makanan</option><option>Minuman</option><option>Snack</option><option>Lainnya</option></select></div>
-            <div className="form-group"><label className="form-label">Harga (Rp) *</label><input className="m3-form-input" type="number" inputMode="numeric" value={form.price} onChange={e=>set("price",e.target.value)} placeholder="0" /></div>
+            <div className="form-group"><label className="form-label">Harga Jual (Rp) *</label><input className="m3-form-input" type="number" inputMode="numeric" value={form.price} onChange={e=>set("price",e.target.value)} placeholder="0" /></div>
           </div>
           <div className="form-group"><label className="form-label">Stok *</label><input className="m3-form-input" type="number" inputMode="numeric" value={form.stock} onChange={e=>set("stock",e.target.value)} placeholder="0" /></div>
         </div>
@@ -1645,6 +1645,10 @@ export default function App() {
   const [penjualan, setPenjualan] = useState(()=>{try{const s=localStorage.getItem("kasir_penjualan");return s?JSON.parse(s):[];}catch{return [];}});
   const [showFormPembelian, setShowFormPembelian] = useState(false);
   const [showFormPenjualan, setShowFormPenjualan] = useState(false);
+  const [formPembelian, setFormPembelian] = useState({barcode:"",produk:"",satuan:"",hargaSatuan:"",jumlahBarang:"",supplier:"",tanggal:new Date().toISOString().split("T")[0],keterangan:""});
+  const [editPembelianId, setEditPembelianId] = useState(null);
+  const [formPenjualan, setFormPenjualan] = useState({produk:"",satuan:"",hargaSatuan:"",jumlahBarang:"",tanggal:new Date().toISOString().split("T")[0],keterangan:""});
+  const [editPenjualanId, setEditPenjualanId] = useState(null);
   const [tabTernak, setTabTernak] = useState("pembelian"); // pembelian | penjualan | rekap
   const [darkMode, setDarkMode] = useState(()=>{
     try{ return localStorage.getItem("kasir_theme")==="light"?false:true; }catch{ return true; }
@@ -1717,6 +1721,97 @@ export default function App() {
   const quickAmounts = [total,Math.ceil(total/10000)*10000,Math.ceil(total/50000)*50000,100000,200000].filter((v,i,a)=>a.indexOf(v)===i).slice(0,4);
 
   const cartProps = {cart,note,setNote,discount,setDiscount,discountType,setDiscountType,subtotal,discountAmt,taxAmt,total,settings,updateQty,removeFromCart,clearCart,setShowPayment};
+
+  const handleTambahPembelian = () => {
+    if(!formPembelian.produk || !formPembelian.satuan || !formPembelian.hargaSatuan || !formPembelian.jumlahBarang){
+      addToast("Isi field: Produk, Satuan, Harga Satuan, Jumlah Barang!","error");
+      return;
+    }
+    const hargaSatuan = parseFloat(formPembelian.hargaSatuan) || 0;
+    const jumlahBarang = parseInt(formPembelian.jumlahBarang) || 0;
+    if(jumlahBarang <= 0){addToast("Jumlah Barang harus lebih dari 0!","error");return;}
+    if(hargaSatuan <= 0){addToast("Harga Satuan harus lebih dari 0!","error");return;}
+    const jumlahRp = jumlahBarang * hargaSatuan;
+    
+    // Cari produk berdasarkan barcode atau nama
+    let matchedProduct = null;
+    if(formPembelian.barcode){
+      matchedProduct = products.find(p=>p.barcode===formPembelian.barcode);
+    }
+    if(!matchedProduct && formPembelian.produk){
+      matchedProduct = products.find(p=>p.name.toLowerCase()===formPembelian.produk.toLowerCase());
+    }
+    
+    // Tambah stok jika produk ditemukan
+    if(matchedProduct){
+      setProducts(ps=>ps.map(p=>p.id===matchedProduct.id?{...p,stock:p.stock+jumlahBarang}:p));
+      addToast(`✅ Stok ${matchedProduct.name} ditambah ${jumlahBarang}!`,"success");
+    }
+    
+    // Tambah catatan pembelian
+    const newPembelian = {
+      id:editPembelianId||genId(),
+      barcode:formPembelian.barcode,
+      jenis:formPembelian.produk,
+      satuan:formPembelian.satuan,
+      harga:hargaSatuan,
+      jumlah:jumlahBarang,
+      total:jumlahRp,
+      tempat:formPembelian.supplier,
+      tanggal:formPembelian.tanggal,
+      catatan:formPembelian.keterangan
+    };
+    
+    if(editPembelianId){
+      // Update pembelian
+      setPembelian(p=>p.map(x=>x.id===editPembelianId?newPembelian:x));
+      addToast("Pembelian berhasil diperbarui!");
+      setEditPembelianId(null);
+    } else {
+      // Tambah pembelian baru
+      setPembelian(p=>[newPembelian,...p]);
+      addToast("Pembelian berhasil dicatat!");
+    }
+    
+    setFormPembelian({barcode:"",produk:"",satuan:"",hargaSatuan:"",jumlahBarang:"",supplier:"",tanggal:new Date().toISOString().split("T")[0],keterangan:""});
+    setShowFormPembelian(false);
+  };
+
+  const handleTambahPenjualan = () => {
+    if(!formPenjualan.produk || !formPenjualan.satuan || !formPenjualan.hargaSatuan || !formPenjualan.jumlahBarang){
+      addToast("Isi field: Produk, Satuan, Harga Satuan, Jumlah Barang!","error");
+      return;
+    }
+    const hargaSatuan = parseFloat(formPenjualan.hargaSatuan) || 0;
+    const jumlahBarang = parseInt(formPenjualan.jumlahBarang) || 0;
+    if(jumlahBarang <= 0){addToast("Jumlah Barang harus lebih dari 0!","error");return;}
+    if(hargaSatuan <= 0){addToast("Harga Satuan harus lebih dari 0!","error");return;}
+    const jumlahRp = jumlahBarang * hargaSatuan;
+    
+    const newPenjualan = {
+      id:editPenjualanId||genId(),
+      produk:formPenjualan.produk,
+      satuan:formPenjualan.satuan,
+      harga:hargaSatuan,
+      jumlah:jumlahBarang,
+      total:jumlahRp,
+      tanggal:formPenjualan.tanggal,
+      catatan:formPenjualan.keterangan,
+      type:"manual"
+    };
+    
+    if(editPenjualanId){
+      setPenjualan(p=>p.map(x=>x.id===editPenjualanId?newPenjualan:x));
+      addToast("Penjualan berhasil diperbarui!");
+      setEditPenjualanId(null);
+    } else {
+      setPenjualan(p=>[newPenjualan,...p]);
+      addToast("Penjualan berhasil dicatat!");
+    }
+    
+    setFormPenjualan({produk:"",satuan:"",hargaSatuan:"",jumlahBarang:"",tanggal:new Date().toISOString().split("T")[0],keterangan:""});
+    setShowFormPenjualan(false);
+  };
 
   const MOBILE_NAVS = [
     ["pos","storefront","Kasir"],
@@ -2023,7 +2118,7 @@ export default function App() {
                         onClick={()=>exportPembelianExcel(pembelian)}>
                         <span className="material-icons-round" style={{fontSize:15}}>download</span>Excel
                       </button>
-                      <button className="btn btn-filled" style={{padding:"8px 14px",fontSize:13}} onClick={()=>setShowFormPembelian(true)}>
+                      <button className="btn btn-filled" style={{padding:"8px 14px",fontSize:13}} onClick={()=>{setFormPembelian({barcode:"",produk:"",satuan:"",hargaSatuan:"",jumlahBarang:"",supplier:"",tanggal:new Date().toISOString().split("T")[0],keterangan:""});setEditPembelianId(null);setShowFormPembelian(true);}}>
                         + Tambah
                       </button>
                     </div>
@@ -2040,23 +2135,42 @@ export default function App() {
                     <div key={item.id} style={{
                       background:"var(--md-surface-2)",borderRadius:12,
                       border:"1px solid var(--md-outline-variant)",
-                      padding:"12px 14px",marginBottom:8,position:"relative",
+                      padding:"12px 14px",marginBottom:8,
                     }}>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
-                        <div>
+                        <div style={{flex:1}}>
                           <div style={{fontSize:14,fontWeight:700,color:"var(--md-on-surface)",marginBottom:2}}>{item.jenis}</div>
-                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.tanggal} · {item.tempat}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginBottom:4}}>{item.tanggal} · {item.tempat||"-"}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.jumlah} {item.satuan} × {formatRp(item.harga)}</div>
                         </div>
                         <div style={{textAlign:"right"}}>
                           <div style={{fontSize:14,fontWeight:700,color:"var(--md-error)"}}>-{formatRp(item.harga*item.jumlah)}</div>
-                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.jumlah} {item.satuan} × {formatRp(item.harga)}</div>
                         </div>
                       </div>
-                      {item.catatan && <div style={{fontSize:12,color:"var(--md-on-surface-variant)",fontStyle:"italic"}}>📝 {item.catatan}</div>}
-                      <button onClick={()=>{if(window.confirm("Hapus catatan ini?")){setPembelian(p=>p.filter(x=>x.id!==item.id));}}}
-                        style={{position:"absolute",top:8,right:8,background:"transparent",border:"none",cursor:"pointer",color:"var(--md-on-surface-variant)",padding:4}}>
-                        <span className="material-icons-round" style={{fontSize:18}}>delete_outline</span>
-                      </button>
+                      {item.catatan && <div style={{fontSize:12,color:"var(--md-on-surface-variant)",fontStyle:"italic",marginBottom:8}}>📝 {item.catatan}</div>}
+                      <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+                        <button onClick={()=>{
+                          setFormPembelian({
+                            barcode:item.barcode,
+                            produk:item.jenis,
+                            satuan:item.satuan,
+                            hargaSatuan:item.harga.toString(),
+                            jumlahBarang:item.jumlah.toString(),
+                            supplier:item.tempat,
+                            tanggal:item.tanggal,
+                            keterangan:item.catatan
+                          });
+                          setEditPembelianId(item.id);
+                          setShowFormPembelian(true);
+                        }}
+                          style={{background:"var(--md-secondary-container)",border:"none",cursor:"pointer",color:"var(--md-on-secondary-container)",padding:"6px 10px",borderRadius:8,fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>
+                          <span className="material-icons-round" style={{fontSize:16}}>edit</span>Edit
+                        </button>
+                        <button onClick={()=>{if(window.confirm("Hapus catatan ini?")){setPembelian(p=>p.filter(x=>x.id!==item.id));}}}
+                          style={{background:"rgba(255,180,171,.1)",border:"1px solid rgba(255,180,171,.3)",cursor:"pointer",color:"var(--md-error)",padding:"6px 10px",borderRadius:8,fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>
+                          <span className="material-icons-round" style={{fontSize:16}}>delete_outline</span>Hapus
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -2067,49 +2181,93 @@ export default function App() {
                 <div>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:8}}>
                     <div style={{fontSize:14,fontWeight:600,color:"var(--md-on-surface-variant)"}}>
-                      {penjualan.length} catatan
+                      {(penjualan.length + transactions.length)} catatan
                     </div>
                     <div style={{display:"flex",gap:8}}>
                       <button className="btn btn-outlined" style={{padding:"8px 10px",fontSize:12,display:"flex",alignItems:"center",gap:4}}
-                        onClick={()=>exportPenjualanExcel(penjualan)}>
+                        onClick={()=>{
+                          const allData = [...transactions.map(t=>({produk:"Multiple Items",satuan:"transaksi",harga:0,jumlah:1,tanggal:formatDate(t.date),catatan:"",type:"pos"})),...penjualan];
+                          exportPenjualanExcel(allData);
+                        }}>
                         <span className="material-icons-round" style={{fontSize:15}}>download</span>Excel
                       </button>
-                      <button className="btn btn-filled" style={{padding:"8px 14px",fontSize:13}} onClick={()=>setShowFormPenjualan(true)}>
+                      <button className="btn btn-filled" style={{padding:"8px 14px",fontSize:13}} onClick={()=>{setFormPenjualan({produk:"",satuan:"",hargaSatuan:"",jumlahBarang:"",tanggal:new Date().toISOString().split("T")[0],keterangan:""});setEditPenjualanId(null);setShowFormPenjualan(true);}}>
                         + Tambah
                       </button>
                     </div>
                   </div>
 
-                  {penjualan.length===0 && (
+                  {(penjualan.length + transactions.length)===0 && (
                     <div style={{textAlign:"center",padding:"40px 0",color:"var(--md-on-surface-variant)"}}>
                       <span className="material-icons-round" style={{fontSize:48,display:"block",marginBottom:8,opacity:.4}}>sell</span>
                       Belum ada catatan penjualan
                     </div>
                   )}
 
+                  {/* Transaksi POS */}
+                  {transactions.slice().reverse().map((t,i)=>(
+                    <div key={t.id} style={{
+                      background:"var(--md-surface-2)",borderRadius:12,
+                      border:"1px solid var(--md-outline-variant)",
+                      padding:"12px 14px",marginBottom:8,
+                    }}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:14,fontWeight:700,color:"var(--md-on-surface)",marginBottom:2}}>Transaksi POS #{t.id}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginBottom:4}}>{formatDate(t.date)} · {t.cashier||"-"}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{t.items.length} item</div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:14,fontWeight:700,color:"var(--md-success)"}}>+{formatRp(t.total)}</div>
+                        </div>
+                      </div>
+                      <div style={{fontSize:11,color:"var(--md-on-surface-variant)",maxHeight:100,overflowY:"auto"}}>
+                        {t.items.map((item,idx)=>(
+                          <div key={idx} style={{padding:"4px 0"}}>• {item.qty}x {item.name}</div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Penjualan Manual */}
                   {penjualan.slice().reverse().map((item,i)=>(
                     <div key={item.id} style={{
                       background:"var(--md-surface-2)",borderRadius:12,
                       border:"1px solid var(--md-outline-variant)",
-                      padding:"12px 14px",marginBottom:8,position:"relative",
+                      padding:"12px 14px",marginBottom:8,
                     }}>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
-                        <div>
-                          <div style={{fontSize:14,fontWeight:700,color:"var(--md-on-surface)",marginBottom:2}}>
-                            {item.produk} — {item.jumlah} {item.satuan}
-                          </div>
-                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.tanggal}</div>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:14,fontWeight:700,color:"var(--md-on-surface)",marginBottom:2}}>{item.produk}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginBottom:4}}>{item.tanggal}</div>
+                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.jumlah} {item.satuan} × {formatRp(item.harga)}</div>
                         </div>
                         <div style={{textAlign:"right"}}>
                           <div style={{fontSize:14,fontWeight:700,color:"var(--md-success)"}}>+{formatRp(item.harga*item.jumlah)}</div>
-                          <div style={{fontSize:11,color:"var(--md-on-surface-variant)"}}>{item.jumlah} × {formatRp(item.harga)}</div>
                         </div>
                       </div>
-                      {item.catatan && <div style={{fontSize:12,color:"var(--md-on-surface-variant)",fontStyle:"italic"}}>📝 {item.catatan}</div>}
-                      <button onClick={()=>{if(window.confirm("Hapus catatan ini?")){setPenjualan(p=>p.filter(x=>x.id!==item.id));}}}
-                        style={{position:"absolute",top:8,right:8,background:"transparent",border:"none",cursor:"pointer",color:"var(--md-on-surface-variant)",padding:4}}>
-                        <span className="material-icons-round" style={{fontSize:18}}>delete_outline</span>
-                      </button>
+                      {item.catatan && <div style={{fontSize:12,color:"var(--md-on-surface-variant)",fontStyle:"italic",marginBottom:8}}>📝 {item.catatan}</div>}
+                      <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+                        <button onClick={()=>{
+                          setFormPenjualan({
+                            produk:item.produk,
+                            satuan:item.satuan,
+                            hargaSatuan:item.harga.toString(),
+                            jumlahBarang:item.jumlah.toString(),
+                            tanggal:item.tanggal,
+                            keterangan:item.catatan
+                          });
+                          setEditPenjualanId(item.id);
+                          setShowFormPenjualan(true);
+                        }}
+                          style={{background:"var(--md-secondary-container)",border:"none",cursor:"pointer",color:"var(--md-on-secondary-container)",padding:"6px 10px",borderRadius:8,fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>
+                          <span className="material-icons-round" style={{fontSize:16}}>edit</span>Edit
+                        </button>
+                        <button onClick={()=>{if(window.confirm("Hapus catatan ini?")){setPenjualan(p=>p.filter(x=>x.id!==item.id));}}}
+                          style={{background:"rgba(255,180,171,.1)",border:"1px solid rgba(255,180,171,.3)",cursor:"pointer",color:"var(--md-error)",padding:"6px 10px",borderRadius:8,fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>
+                          <span className="material-icons-round" style={{fontSize:16}}>delete_outline</span>Hapus
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -2118,7 +2276,9 @@ export default function App() {
               {/* ── TAB REKAP ── */}
               {tabTernak==="rekap" && (()=>{
                 const totalBeli = pembelian.reduce((s,x)=>s+(x.harga*x.jumlah),0);
-                const totalJual = penjualan.reduce((s,x)=>s+(x.harga*x.jumlah),0);
+                const totalJualPOS = transactions.reduce((s,x)=>s+x.total,0);
+                const totalJualManual = penjualan.reduce((s,x)=>s+(x.harga*x.jumlah),0);
+                const totalJual = totalJualPOS + totalJualManual;
                 const laba = totalJual - totalBeli;
 
                 // Rekap pembelian per jenis
@@ -2149,7 +2309,8 @@ export default function App() {
                       <div style={{background:"rgba(110,231,183,.1)",border:"1px solid rgba(110,231,183,.3)",borderRadius:12,padding:"14px 12px"}}>
                         <div style={{fontSize:11,fontWeight:600,color:"var(--md-success)",textTransform:"uppercase",letterSpacing:".5px",marginBottom:6}}>Total Penjualan</div>
                         <div style={{fontSize:18,fontWeight:800,color:"var(--md-success)",fontFamily:"var(--font-mono)"}}>{formatRp(totalJual)}</div>
-                        <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginTop:4}}>{penjualan.length} transaksi</div>
+                        <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginTop:4}}>{transactions.length + penjualan.length} transaksi</div>
+                        <div style={{fontSize:10,color:"var(--md-on-surface-variant)",marginTop:2}}>POS: {transactions.length} + Manual: {penjualan.length}</div>
                       </div>
                     </div>
 
@@ -2217,7 +2378,7 @@ export default function App() {
               <div className="m3-settings-section">
                 <div className="settings-section-title">🗑️ Reset Data</div>
                 <div className="settings-row"><div><div className="slbl">Hapus Semua Transaksi</div><div className="sval">Data produk tidak ikut terhapus</div></div><button className="btn-danger-tonal" onClick={()=>{if(window.confirm("Hapus semua transaksi?")){setTransactions([]);addToast("Semua transaksi dihapus");}}}>Hapus</button></div>
-                <div className="settings-row"><div><div className="slbl">Reset Semua Data</div><div className="sval">Kembali ke data awal</div></div><button className="btn-danger-tonal" onClick={()=>{if(window.confirm("Reset semua data?")){setProducts(INITIAL_PRODUCTS);setTransactions(INITIAL_TRANSACTIONS);addToast("Data direset");}}}>Reset</button></div>
+                <div className="settings-row"><div><div className="slbl">Delete Semua Produk</div><div className="sval">Hapus semua data produk</div></div><button className="btn-danger-tonal" onClick={()=>{if(window.confirm("Delete semua produk?")){setProducts([]);addToast("Semua produk dihapus");}}}>Delete</button></div>
               </div>
 
               {/* 3. Tampilan */}
@@ -2577,6 +2738,148 @@ export default function App() {
             setShowProductForm(null);
           }}
         />
+      )}
+
+      {/* ── Pembelian Form ── */}
+      {showFormPembelian && (
+        <div className="m3-overlay">
+          <div className="m3-sheet">
+            <div className="sheet-handle" />
+            <div className="sheet-header">
+              <span className="sheet-title">{editPembelianId?"✏️ Edit Pembelian":"➕ Catatan Pembelian"}</span>
+              <button className="sheet-close" onClick={()=>{setShowFormPembelian(false);setEditPembelianId(null);}}>✕</button>
+            </div>
+            <div className="sheet-body">
+              <div className="form-group">
+                <label className="form-label">Barcode (Opsional)</label>
+                <div style={{display:"flex",gap:6}}>
+                  <input className="m3-form-input" value={formPembelian.barcode} onChange={e=>setFormPembelian(f=>({...f,barcode:e.target.value}))} placeholder="8991234..." style={{flex:1}} />
+                </div>
+              </div>
+              
+              <div className="form-group">
+                <label className="form-label">Nama Produk *</label>
+                <input className="m3-form-input" value={formPembelian.produk} onChange={e=>setFormPembelian(f=>({...f,produk:e.target.value}))} placeholder="Nama produk" />
+                {formPembelian.produk && (
+                  <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginTop:4,maxHeight:100,overflowY:"auto"}}>
+                    {products.filter(p=>p.name.toLowerCase().includes(formPembelian.produk.toLowerCase())).map(p=>(
+                      <div key={p.id} style={{padding:"4px 8px",background:"var(--md-surface-2)",borderRadius:6,marginTop:2,cursor:"pointer"}} onClick={()=>setFormPembelian(f=>({...f,produk:p.name}))}>
+                        {p.name} (Stok: {p.stock})
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="form-row-2">
+                <div className="form-group">
+                  <label className="form-label">Satuan *</label>
+                  <input className="m3-form-input" value={formPembelian.satuan} onChange={e=>setFormPembelian(f=>({...f,satuan:e.target.value}))} placeholder="pcs, box, dus" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Harga Satuan (Rp) *</label>
+                  <input className="m3-form-input" type="number" inputMode="numeric" value={formPembelian.hargaSatuan} onChange={e=>setFormPembelian(f=>({...f,hargaSatuan:e.target.value}))} placeholder="0" />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Jumlah Barang *</label>
+                <input className="m3-form-input" type="number" inputMode="numeric" value={formPembelian.jumlahBarang} onChange={e=>setFormPembelian(f=>({...f,jumlahBarang:e.target.value}))} placeholder="0" />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Jumlah (Rp)</label>
+                <div style={{padding:"12px",background:"var(--md-surface-2)",borderRadius:10,fontSize:14,fontWeight:700,color:"var(--md-primary)",fontFamily:"var(--font-mono)"}}>
+                  {formPembelian.hargaSatuan && formPembelian.jumlahBarang ? formatRp(parseFloat(formPembelian.hargaSatuan) * parseInt(formPembelian.jumlahBarang)) : "Rp 0"}
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Supplier</label>
+                <input className="m3-form-input" value={formPembelian.supplier} onChange={e=>setFormPembelian(f=>({...f,supplier:e.target.value}))} placeholder="Nama supplier (boleh kosong)" />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Tanggal</label>
+                <input className="m3-form-input" type="date" value={formPembelian.tanggal} onChange={e=>setFormPembelian(f=>({...f,tanggal:e.target.value}))} />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Keterangan</label>
+                <textarea className="m3-form-input" value={formPembelian.keterangan} onChange={e=>setFormPembelian(f=>({...f,keterangan:e.target.value}))} placeholder="Catatan tambahan..." style={{minHeight:60,resize:"vertical"}} />
+              </div>
+            </div>
+            <div className="sheet-footer">
+              <button className="btn btn-outlined" onClick={()=>{setShowFormPembelian(false);setEditPembelianId(null);}}>Batal</button>
+              <button className="btn btn-filled" onClick={handleTambahPembelian}>💾 {editPembelianId?"Simpan":"Tambah"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Penjualan Form ── */}
+      {showFormPenjualan && (
+        <div className="m3-overlay">
+          <div className="m3-sheet">
+            <div className="sheet-handle" />
+            <div className="sheet-header">
+              <span className="sheet-title">{editPenjualanId?"✏️ Edit Penjualan":"➕ Catatan Penjualan"}</span>
+              <button className="sheet-close" onClick={()=>{setShowFormPenjualan(false);setEditPenjualanId(null);}}>✕</button>
+            </div>
+            <div className="sheet-body">
+              <div className="form-group">
+                <label className="form-label">Nama Produk *</label>
+                <input className="m3-form-input" value={formPenjualan.produk} onChange={e=>setFormPenjualan(f=>({...f,produk:e.target.value}))} placeholder="Nama produk" />
+                {formPenjualan.produk && (
+                  <div style={{fontSize:11,color:"var(--md-on-surface-variant)",marginTop:4,maxHeight:100,overflowY:"auto"}}>
+                    {products.filter(p=>p.name.toLowerCase().includes(formPenjualan.produk.toLowerCase())).map(p=>(
+                      <div key={p.id} style={{padding:"4px 8px",background:"var(--md-surface-2)",borderRadius:6,marginTop:2,cursor:"pointer"}} onClick={()=>setFormPenjualan(f=>({...f,produk:p.name}))}>
+                        {p.name} (Stok: {p.stock})
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="form-row-2">
+                <div className="form-group">
+                  <label className="form-label">Satuan *</label>
+                  <input className="m3-form-input" value={formPenjualan.satuan} onChange={e=>setFormPenjualan(f=>({...f,satuan:e.target.value}))} placeholder="pcs, box, dus" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Harga Satuan (Rp) *</label>
+                  <input className="m3-form-input" type="number" inputMode="numeric" value={formPenjualan.hargaSatuan} onChange={e=>setFormPenjualan(f=>({...f,hargaSatuan:e.target.value}))} placeholder="0" />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Jumlah Barang *</label>
+                <input className="m3-form-input" type="number" inputMode="numeric" value={formPenjualan.jumlahBarang} onChange={e=>setFormPenjualan(f=>({...f,jumlahBarang:e.target.value}))} placeholder="0" />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Jumlah (Rp)</label>
+                <div style={{padding:"12px",background:"var(--md-surface-2)",borderRadius:10,fontSize:14,fontWeight:700,color:"var(--md-success)",fontFamily:"var(--font-mono)"}}>
+                  {formPenjualan.hargaSatuan && formPenjualan.jumlahBarang ? formatRp(parseFloat(formPenjualan.hargaSatuan) * parseInt(formPenjualan.jumlahBarang)) : "Rp 0"}
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Tanggal</label>
+                <input className="m3-form-input" type="date" value={formPenjualan.tanggal} onChange={e=>setFormPenjualan(f=>({...f,tanggal:e.target.value}))} />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Keterangan</label>
+                <textarea className="m3-form-input" value={formPenjualan.keterangan} onChange={e=>setFormPenjualan(f=>({...f,keterangan:e.target.value}))} placeholder="Catatan tambahan..." style={{minHeight:60,resize:"vertical"}} />
+              </div>
+            </div>
+            <div className="sheet-footer">
+              <button className="btn btn-outlined" onClick={()=>{setShowFormPenjualan(false);setEditPenjualanId(null);}}>Batal</button>
+              <button className="btn btn-filled" onClick={handleTambahPenjualan}>💾 {editPenjualanId?"Simpan":"Tambah"}</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Toasts ── */}
